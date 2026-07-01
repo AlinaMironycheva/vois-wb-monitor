@@ -1,0 +1,8 @@
+[
+  {
+    "nmId": 12345678,
+    "name": "Название товара",
+    "price_alert_threshold_pct": 10,
+    "discount_alert_threshold_pct": 5
+  }
+]

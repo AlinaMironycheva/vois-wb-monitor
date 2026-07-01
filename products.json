@@ -1,8 +1,74 @@
 [
   {
-    "nmId": 12345678,
-    "name": "Название товара",
-    "price_alert_threshold_pct": 10,
-    "discount_alert_threshold_pct": 5
+    "nm_id": 246438624,
+    "name": "WB 246438624",
+    "max_price_growth_percent": 10,
+    "min_stock": 10
+  },
+  {
+    "nm_id": 142044104,
+    "name": "WB 142044104",
+    "max_price_growth_percent": 10,
+    "min_stock": 10
+  },
+  {
+    "nm_id": 967397633,
+    "name": "WB 967397633",
+    "max_price_growth_percent": 10,
+    "min_stock": 10
+  },
+  {
+    "nm_id": 92442613,
+    "name": "WB 92442613",
+    "max_price_growth_percent": 10,
+    "min_stock": 10
+  },
+  {
+    "nm_id": 148825454,
+    "name": "WB 148825454",
+    "max_price_growth_percent": 10,
+    "min_stock": 10
+  },
+  {
+    "nm_id": 197560872,
+    "name": "WB 197560872",
+    "max_price_growth_percent": 10,
+    "min_stock": 10
+  },
+  {
+    "nm_id": 41002668,
+    "name": "WB 41002668",
+    "max_price_growth_percent": 10,
+    "min_stock": 10
+  },
+  {
+    "nm_id": 246442159,
+    "name": "WB 246442159",
+    "max_price_growth_percent": 10,
+    "min_stock": 10
+  },
+  {
+    "nm_id": 71713814,
+    "name": "WB 71713814",
+    "max_price_growth_percent": 10,
+    "min_stock": 10
+  },
+  {
+    "nm_id": 283184886,
+    "name": "WB 283184886",
+    "max_price_growth_percent": 10,
+    "min_stock": 10
+  },
+  {
+    "nm_id": 139625239,
+    "name": "WB 139625239",
+    "max_price_growth_percent": 10,
+    "min_stock": 10
+  },
+  {
+    "nm_id": 246443845,
+    "name": "WB 246443845",
+    "max_price_growth_percent": 10,
+    "min_stock": 10
   }
 ]

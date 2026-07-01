@@ -1,0 +1,11 @@
+{
+  "12345678": {
+    "price": 990,
+    "discount": 30,
+    "rating": 4.8,
+    "reviews": 120,
+    "available": true,
+    "last_seen": "2026-06-30",
+    "missing_days": 0
+  }
+}

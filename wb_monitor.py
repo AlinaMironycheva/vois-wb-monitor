@@ -1,5 +1,6 @@
 import json
 import os
+import time
 import requests
 from datetime import date
 
@@ -13,9 +14,6 @@ TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
 PRODUCTS_FILE = "products.json"
 STATE_FILE = "state.json"
 
-# Рабочий публичный endpoint WB — поиск по артикулу.
-# Это тот же API, который использует сам сайт WB.
-# Параметр query = nm_id товара (артикул).
 WB_SEARCH_URL = (
     "https://search.wb.ru/exactmatch/ru/common/v9/search"
     "?appType=1&curr=rub&dest=-1257786&lang=ru"
@@ -32,9 +30,19 @@ HEADERS = {
     "Accept-Language": "ru-RU,ru;q=0.9",
 }
 
+# Пауза между товарами (секунды) — снижает вероятность 429
+DELAY_BETWEEN_PRODUCTS = 3
+
+# Параметры backoff при 429: 3 попытки, задержки 2с → 4с → 8с
+BACKOFF_RETRIES = 3
+BACKOFF_BASE_DELAY = 2
+
 RATING_DROP_THRESHOLD = 0.2
 REVIEWS_SPIKE_THRESHOLD = 20
 MISSING_DAYS_ALERT = 2
+
+# Специальный маркер: WB вернул 429, данные не получены, но это не ошибка карточки
+RATE_LIMITED = "RATE_LIMITED"
 
 
 # ───────────────────────────────────────────
@@ -59,71 +67,77 @@ def save_json(path, data):
 
 def fetch_product(nm_id):
     """
-    Получает данные о товаре через публичный поисковый API WB.
-    Ищем товар по его артикулу (nm_id) и берём первое совпадение.
-    Возвращает словарь с данными или None при ошибке.
+    Возвращает:
+    - словарь с данными о товаре — если всё ок
+    - RATE_LIMITED (строка-маркер) — если WB вернул 429
+    - None — если карточка реально недоступна или неизвестная ошибка
     """
     url = WB_SEARCH_URL.format(nm_id=nm_id)
-    try:
-        resp = requests.get(url, headers=HEADERS, timeout=15)
-        resp.raise_for_status()
-        data = resp.json()
 
-        products = data.get("data", {}).get("products", [])
-        if not products:
-            print(f"  Товар {nm_id} не найден в результатах поиска")
+    for attempt in range(1, BACKOFF_RETRIES + 1):
+        try:
+            resp = requests.get(url, headers=HEADERS, timeout=15)
+
+            # 429: WB ограничивает запросы — это временно, не ошибка карточки
+            if resp.status_code == 429:
+                delay = BACKOFF_BASE_DELAY ** attempt  # 2с, 4с, 8с
+                print(f"  429 для {nm_id}, попытка {attempt}/{BACKOFF_RETRIES}, ждём {delay}с")
+                if attempt < BACKOFF_RETRIES:
+                    time.sleep(delay)
+                    continue
+                else:
+                    print(f"  429 для {nm_id}: все попытки исчерпаны, пропускаем")
+                    return RATE_LIMITED
+
+            resp.raise_for_status()
+            data = resp.json()
+
+            products = data.get("data", {}).get("products", [])
+            if not products:
+                print(f"  Товар {nm_id}: пустой ответ от WB (карточка не найдена)")
+                return None
+
+            # Ищем точное совпадение по id
+            product = None
+            for p in products:
+                if str(p.get("id")) == str(nm_id):
+                    product = p
+                    break
+            if product is None:
+                product = products[0]
+                print(f"  Точный артикул {nm_id} не найден, взят первый: id={product.get('id')}")
+
+            sizes = product.get("sizes", [])
+            price = 0
+            base_price = 0
+            available = False
+
+            if sizes:
+                price_data = sizes[0].get("price", {})
+                price = price_data.get("product", 0) / 100
+                base_price = price_data.get("basic", 0) / 100
+                available = product.get("totalQuantity", 0) > 0
+
+            discount = round((1 - price / base_price) * 100) if base_price > 0 and price > 0 else 0
+
+            return {
+                "price": price,
+                "base_price": base_price,
+                "discount": discount,
+                "rating": product.get("reviewRating", 0),
+                "reviews": product.get("feedbacks", 0),
+                "available": available,
+                "name": product.get("name", ""),
+            }
+
+        except requests.exceptions.HTTPError as e:
+            print(f"  HTTP ошибка для {nm_id}: {e}")
+            return None
+        except Exception as e:
+            print(f"  Ошибка при запросе {nm_id}: {e}")
             return None
 
-        # Ищем точное совпадение по id среди результатов
-        product = None
-        for p in products:
-            if str(p.get("id")) == str(nm_id):
-                product = p
-                break
-
-        # Если точного совпадения нет — берём первый результат
-        # (такое бывает если WB переиндексировал артикул)
-        if product is None:
-            product = products[0]
-            print(f"  Точный артикул {nm_id} не найден, взят первый результат: id={product.get('id')}")
-
-        # Цены хранятся в sizes[0].price и умножены на 100
-        sizes = product.get("sizes", [])
-        price = 0
-        base_price = 0
-        available = False
-
-        if sizes:
-            price_data = sizes[0].get("price", {})
-            # product — цена со скидкой, basic — без скидки
-            price = price_data.get("product", 0) / 100
-            base_price = price_data.get("basic", 0) / 100
-
-            # Наличие: поле totalQuantity > 0
-            available = product.get("totalQuantity", 0) > 0
-
-        # Скидка в процентах
-        if base_price > 0 and price > 0:
-            discount = round((1 - price / base_price) * 100)
-        else:
-            discount = 0
-
-        return {
-            "price": price,
-            "base_price": base_price,
-            "discount": discount,
-            "rating": product.get("reviewRating", 0),
-            "reviews": product.get("feedbacks", 0),
-            "available": available,
-            "name": product.get("name", ""),
-        }
-
-    except requests.exceptions.HTTPError as e:
-        print(f"  HTTP ошибка для {nm_id}: {e}")
-        return None
-    except Exception as e:
-        print(f"  Ошибка при запросе {nm_id}: {e}")
-        return None
+    return None
 
 
 # ───────────────────────────────────────────
@@ -134,6 +148,7 @@ def check_product(product_cfg, current, previous):
     """
     Сравнивает текущие данные с предыдущими.
     Возвращает (список алертов, кол-во дней без данных).
+    Вызывается только когда current — словарь с данными (не None, не RATE_LIMITED).
     """
     alerts = []
     name = product_cfg["name"]
@@ -143,30 +158,24 @@ def check_product(product_cfg, current, previous):
 
     label = f"*{name}* (nm: {nm_id})"
 
-    # Нет данных
+    # Карточка реально недоступна (не 429, а пустой ответ)
     if current is None:
         missing = previous.get("missing_days", 0) + 1
         if missing >= MISSING_DAYS_ALERT:
             alerts.append(
                 f"{label}\n"
-                f"🚨 Данные недоступны {missing} дня подряд. "
-                f"Проверь карточку вручную."
+                f"🚨 Карточка недоступна {missing} дня подряд. "
+                f"Проверь вручную."
             )
         return alerts, missing
 
-    # Товар недоступен
+    # Товар пропал из продажи
     if not current["available"] and previous.get("available", True):
-        alerts.append(
-            f"{label}\n"
-            f"🚨 Товар пропал из продажи"
-        )
+        alerts.append(f"{label}\n🚨 Товар пропал из продажи")
 
     # Товар снова появился
     if current["available"] and not previous.get("available", True):
-        alerts.append(
-            f"{label}\n"
-            f"✅ Товар снова в наличии"
-        )
+        alerts.append(f"{label}\n✅ Товар снова в наличии")
 
     # Цена выросла
     prev_price = previous.get("price")
@@ -175,8 +184,7 @@ def check_product(product_cfg, current, previous):
         if price_change_pct >= threshold_price:
             alerts.append(
                 f"{label}\n"
-                f"🚨 Цена выросла: {prev_price:.0f} ₽ → "
-                f"{current['price']:.0f} ₽ "
+                f"🚨 Цена выросла: {prev_price:.0f} ₽ → {current['price']:.0f} ₽ "
                 f"(+{price_change_pct:.1f}%)"
             )
 
@@ -188,19 +196,16 @@ def check_product(product_cfg, current, previous):
             direction = "упала" if discount_delta > 0 else "выросла"
             alerts.append(
                 f"{label}\n"
-                f"⚠️ Скидка {direction}: "
-                f"{prev_discount}% → {current['discount']}%"
+                f"⚠️ Скидка {direction}: {prev_discount}% → {current['discount']}%"
             )
 
     # Рейтинг упал
     prev_rating = previous.get("rating")
     if prev_rating and current["rating"] > 0:
-        rating_drop = prev_rating - current["rating"]
-        if rating_drop >= RATING_DROP_THRESHOLD:
+        if prev_rating - current["rating"] >= RATING_DROP_THRESHOLD:
             alerts.append(
                 f"{label}\n"
-                f"⚠️ Рейтинг упал: "
-                f"{prev_rating} → {current['rating']}"
+                f"⚠️ Рейтинг упал: {prev_rating} → {current['rating']}"
             )
 
     # Всплеск отзывов
@@ -210,8 +215,7 @@ def check_product(product_cfg, current, previous):
         if reviews_delta >= REVIEWS_SPIKE_THRESHOLD:
             alerts.append(
                 f"{label}\n"
-                f"ℹ️ Резкий рост отзывов: "
-                f"+{reviews_delta} за день "
+                f"ℹ️ Резкий рост отзывов: +{reviews_delta} за день "
                 f"(было {prev_reviews}, стало {current['reviews']})"
             )
 
@@ -264,10 +268,20 @@ def main():
         previous = state.get(nm_id, {})
         current = fetch_product(product["nm_id"])
 
+        # ── 429: WB временно заблокировал запрос ──────────────────────────
+        # Не считаем это ошибкой карточки.
+        # Оставляем старое состояние без изменений, счётчик не трогаем.
+        if current == RATE_LIMITED:
+            print(f"  {name} ({nm_id}): пропущено из-за 429, состояние не изменено")
+            new_state[nm_id] = previous  # сохраняем как было
+            # Пауза перед следующим товаром немного увеличена после 429
+            time.sleep(DELAY_BETWEEN_PRODUCTS * 2)
+            continue
+
+        # ── Обычная логика: данные получены или карточка недоступна ───────
         alerts, missing_days = check_product(product, current, previous)
         all_alerts.extend(alerts)
 
-        # Сохраняем новое состояние
         if current is not None:
             new_state[nm_id] = {
                 "price": current["price"],
@@ -280,16 +294,17 @@ def main():
                 "missing_days": 0,
             }
         else:
-            # Сохраняем старое состояние, увеличиваем счётчик
             new_state[nm_id] = {
                 **previous,
                 "missing_days": missing_days,
             }
 
+        # Пауза между запросами — снижает риск 429
+        time.sleep(DELAY_BETWEEN_PRODUCTS)
+
     save_json(STATE_FILE, new_state)
     print(f"Состояние сохранено: {STATE_FILE}")
 
-    # Отправляем алерты
     if all_alerts:
         header = f"🔔 *WB Monitor — {today}*\n{'─' * 30}\n\n"
         message = header + "\n\n".join(all_alerts)
@@ -297,7 +312,7 @@ def main():
         print(f"Отправлено алертов: {len(all_alerts)}")
     else:
         print("Изменений нет — алерты не отправляются")
-        # Раскомментируй если хочешь получать ежедневный отчёт "всё ок":
+        # Раскомментируй если хочешь ежедневный отчёт "всё ок":
         # send_telegram(f"✅ WB Monitor {today}: изменений нет")
 
 
